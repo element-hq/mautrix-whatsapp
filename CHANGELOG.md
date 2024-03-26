@@ -1,3 +1,10 @@
+# v0.10.6 (2024-03-16)
+
+* Bumped minimum Go version to 1.21.
+* Added 8-letter code pairing support to provisioning API.
+* Added more bugs to fix later.
+* Renamed default branch from `master` to `main`.
+
 # v0.10.5 (2023-12-16)
 
 * Added support for sending media to channels.

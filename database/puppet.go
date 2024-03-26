@@ -1,5 +1,5 @@
 // mautrix-whatsapp - A Matrix-WhatsApp puppeting bridge.
-// Copyright (C) 2021 Tulir Asokan
+// Copyright (C) 2024 Tulir Asokan
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as published by
@@ -17,74 +17,71 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"time"
 
-	"go.mau.fi/util/dbutil"
+	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow/types"
-	log "maunium.net/go/maulogger/v2"
+
+	"go.mau.fi/util/dbutil"
 
 	"github.com/element-hq/mautrix-go/id"
 )
 
 type PuppetQuery struct {
-	db  *Database
-	log log.Logger
+	*dbutil.QueryHelper[*Puppet]
 }
 
-func (pq *PuppetQuery) New() *Puppet {
+func newPuppet(qh *dbutil.QueryHelper[*Puppet]) *Puppet {
 	return &Puppet{
-		db:  pq.db,
-		log: pq.log,
+		qh: qh,
 
 		EnablePresence: true,
 		EnableReceipts: true,
 	}
 }
 
-func (pq *PuppetQuery) GetAll() (puppets []*Puppet) {
-	rows, err := pq.db.Query("SELECT username, avatar, avatar_url, displayname, name_quality, name_set, avatar_set, contact_info_set, last_sync, custom_mxid, access_token, next_batch, enable_presence, enable_receipts, first_activity_ts, last_activity_ts FROM puppet")
-	if err != nil || rows == nil {
-		return nil
-	}
-	defer rows.Close()
-	for rows.Next() {
-		puppets = append(puppets, pq.New().Scan(rows))
-	}
-	return
+const (
+	getAllPuppetsQuery = `
+		SELECT username, avatar, avatar_url, displayname, name_quality, name_set, avatar_set, contact_info_set,
+		       last_sync, custom_mxid, access_token, next_batch, enable_presence, enable_receipts, first_activity_ts, last_activity_ts
+		FROM puppet
+	`
+	getPuppetByJIDQuery              = getAllPuppetsQuery + " WHERE username=$1"
+	getPuppetByCustomMXIDQuery       = getAllPuppetsQuery + " WHERE custom_mxid=$1"
+	getAllPuppetsWithCustomMXIDQuery = getAllPuppetsQuery + " WHERE custom_mxid<>''"
+	insertPuppetQuery                = `
+		INSERT INTO puppet (username, avatar, avatar_url, avatar_set, displayname, name_quality, name_set, contact_info_set,
+							last_sync, custom_mxid, access_token, next_batch, enable_presence, enable_receipts)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+	`
+	updatePuppetQuery = `
+		UPDATE puppet
+		SET avatar=$2, avatar_url=$3, avatar_set=$4, displayname=$5, name_quality=$6, name_set=$7, contact_info_set=$8,
+		    last_sync=$9, custom_mxid=$10, access_token=$11, next_batch=$12, enable_presence=$13, enable_receipts=$14
+		WHERE username=$1
+	`
+)
+
+func (pq *PuppetQuery) GetAll(ctx context.Context) ([]*Puppet, error) {
+	return pq.QueryMany(ctx, getAllPuppetsQuery)
 }
 
-func (pq *PuppetQuery) Get(jid types.JID) *Puppet {
-	row := pq.db.QueryRow("SELECT username, avatar, avatar_url, displayname, name_quality, name_set, avatar_set, contact_info_set, last_sync, custom_mxid, access_token, next_batch, enable_presence, enable_receipts, first_activity_ts, last_activity_ts FROM puppet WHERE username=$1", jid.User)
-	if row == nil {
-		return nil
-	}
-	return pq.New().Scan(row)
+func (pq *PuppetQuery) Get(ctx context.Context, jid types.JID) (*Puppet, error) {
+	return pq.QueryOne(ctx, getPuppetByJIDQuery, jid.User)
 }
 
-func (pq *PuppetQuery) GetByCustomMXID(mxid id.UserID) *Puppet {
-	row := pq.db.QueryRow("SELECT username, avatar, avatar_url, displayname, name_quality, name_set, avatar_set, contact_info_set, last_sync, custom_mxid, access_token, next_batch, enable_presence, enable_receipts, first_activity_ts, last_activity_ts FROM puppet WHERE custom_mxid=$1", mxid)
-	if row == nil {
-		return nil
-	}
-	return pq.New().Scan(row)
+func (pq *PuppetQuery) GetByCustomMXID(ctx context.Context, mxid id.UserID) (*Puppet, error) {
+	return pq.QueryOne(ctx, getPuppetByCustomMXIDQuery, mxid)
 }
 
-func (pq *PuppetQuery) GetAllWithCustomMXID() (puppets []*Puppet) {
-	rows, err := pq.db.Query("SELECT username, avatar, avatar_url, displayname, name_quality, name_set, avatar_set, contact_info_set, last_sync, custom_mxid, access_token, next_batch, enable_presence, enable_receipts, first_activity_ts, last_activity_ts FROM puppet WHERE custom_mxid<>''")
-	if err != nil || rows == nil {
-		return nil
-	}
-	defer rows.Close()
-	for rows.Next() {
-		puppets = append(puppets, pq.New().Scan(rows))
-	}
-	return
+func (pq *PuppetQuery) GetAllWithCustomMXID(ctx context.Context) ([]*Puppet, error) {
+	return pq.QueryMany(ctx, getAllPuppetsWithCustomMXIDQuery)
 }
 
 type Puppet struct {
-	db  *Database
-	log log.Logger
+	qh *dbutil.QueryHelper[*Puppet]
 
 	JID            types.JID
 	Avatar         string
@@ -106,17 +103,14 @@ type Puppet struct {
 	LastActivityTs  int64
 }
 
-func (puppet *Puppet) Scan(row dbutil.Scannable) *Puppet {
+func (puppet *Puppet) Scan(row dbutil.Scannable) (*Puppet, error) {
 	var displayname, avatar, avatarURL, customMXID, accessToken, nextBatch sql.NullString
 	var quality, firstActivityTs, lastActivityTs, lastSync sql.NullInt64
 	var enablePresence, enableReceipts, nameSet, avatarSet, contactInfoSet sql.NullBool
 	var username string
 	err := row.Scan(&username, &avatar, &avatarURL, &displayname, &quality, &nameSet, &avatarSet, &contactInfoSet, &lastSync, &customMXID, &accessToken, &nextBatch, &enablePresence, &enableReceipts, &firstActivityTs, &lastActivityTs)
 	if err != nil {
-		if err != sql.ErrNoRows {
-			puppet.log.Errorln("Database scan failed:", err)
-		}
-		return nil
+		return nil, err
 	}
 	puppet.JID = types.NewJID(username, types.DefaultUserServer)
 	puppet.Displayname = displayname.String
@@ -136,66 +130,51 @@ func (puppet *Puppet) Scan(row dbutil.Scannable) *Puppet {
 	puppet.EnableReceipts = enableReceipts.Bool
 	puppet.FirstActivityTs = firstActivityTs.Int64
 	puppet.LastActivityTs = lastActivityTs.Int64
-	return puppet
+	return puppet, nil
 }
 
-func (puppet *Puppet) Insert() {
-	if puppet.JID.Server != types.DefaultUserServer {
-		puppet.log.Warnfln("Not inserting %s: not a user", puppet.JID)
-		return
-	}
-	var lastSyncTs int64
+func (puppet *Puppet) sqlVariables() []any {
+	var lastSyncTS int64
 	if !puppet.LastSync.IsZero() {
-		lastSyncTs = puppet.LastSync.Unix()
+		lastSyncTS = puppet.LastSync.Unix()
 	}
-	_, err := puppet.db.Exec(`
-		INSERT INTO puppet (username, avatar, avatar_url, avatar_set, displayname, name_quality, name_set, contact_info_set,
-							last_sync, custom_mxid, access_token, next_batch, enable_presence, enable_receipts)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-	`, puppet.JID.User, puppet.Avatar, puppet.AvatarURL.String(), puppet.AvatarSet, puppet.Displayname,
-		puppet.NameQuality, puppet.NameSet, puppet.ContactInfoSet, lastSyncTs, puppet.CustomMXID, puppet.AccessToken, puppet.NextBatch,
+	return []any{
+		puppet.JID.User, puppet.Avatar, puppet.AvatarURL.String(), puppet.AvatarSet, puppet.Displayname,
+		puppet.NameQuality, puppet.NameSet, puppet.ContactInfoSet, lastSyncTS,
+		puppet.CustomMXID, puppet.AccessToken, puppet.NextBatch,
 		puppet.EnablePresence, puppet.EnableReceipts,
-	)
-	if err != nil {
-		puppet.log.Warnfln("Failed to insert %s: %v", puppet.JID, err)
 	}
 }
 
-func (puppet *Puppet) Update() {
-	var lastSyncTs int64
-	if !puppet.LastSync.IsZero() {
-		lastSyncTs = puppet.LastSync.Unix()
+func (puppet *Puppet) Insert(ctx context.Context) error {
+	if puppet.JID.Server != types.DefaultUserServer {
+		zerolog.Ctx(ctx).Warn().Stringer("jid", puppet.JID).Msg("Not inserting puppet: not a user")
+		return nil
 	}
-	_, err := puppet.db.Exec(`
-		UPDATE puppet
-		SET displayname=$1, name_quality=$2, name_set=$3, avatar=$4, avatar_url=$5, avatar_set=$6, contact_info_set=$7, last_sync=$8,
-		    custom_mxid=$9, access_token=$10, next_batch=$11, enable_presence=$12, enable_receipts=$13
-		WHERE username=$14
-	`, puppet.Displayname, puppet.NameQuality, puppet.NameSet, puppet.Avatar, puppet.AvatarURL.String(), puppet.AvatarSet, puppet.ContactInfoSet,
-		lastSyncTs, puppet.CustomMXID, puppet.AccessToken, puppet.NextBatch, puppet.EnablePresence, puppet.EnableReceipts,
-		puppet.JID.User)
-	if err != nil {
-		puppet.log.Warnfln("Failed to update %s: %v", puppet.JID, err)
-	}
+	return puppet.qh.Exec(ctx, insertPuppetQuery, puppet.sqlVariables()...)
 }
 
-func (puppet *Puppet) UpdateActivityTs(ts int64) {
-	var signedTs = int64(ts)
-	if puppet.LastActivityTs > signedTs {
+func (puppet *Puppet) Update(ctx context.Context) error {
+	return puppet.qh.Exec(ctx, updatePuppetQuery, puppet.sqlVariables()...)
+}
+
+func (puppet *Puppet) UpdateActivityTs(ctx context.Context, activityTs int64) {
+	if puppet.LastActivityTs > activityTs {
 		return
 	}
-	puppet.log.Debugfln("Updating activity time for %s to %d", puppet.JID, signedTs)
-	puppet.LastActivityTs = signedTs
-	_, err := puppet.db.Exec("UPDATE puppet SET last_activity_ts=$1 WHERE username=$2", puppet.LastActivityTs, puppet.JID.User)
+	log := zerolog.Ctx(ctx).With().Stringer("jid", puppet.JID).Logger()
+	log.Debug().Int64("activity_ts", activityTs).Msg("Updating activity time")
+	puppet.LastActivityTs = activityTs
+	err := puppet.qh.Exec(ctx, "UPDATE puppet SET last_activity_ts=$1 WHERE username=$2", puppet.LastActivityTs, puppet.JID.User)
 	if err != nil {
-		puppet.log.Warnfln("Failed to update last_activity_ts for %s: %v", puppet.JID, err)
+		log.Warn().Err(err).Msg("Failed to update last_activity_ts")
 	}
 
 	if puppet.FirstActivityTs == 0 {
-		puppet.FirstActivityTs = signedTs
-		_, err = puppet.db.Exec("UPDATE puppet SET first_activity_ts=$1 WHERE username=$2 AND first_activity_ts is NULL", puppet.FirstActivityTs, puppet.JID.User)
+		puppet.FirstActivityTs = activityTs
+		err = puppet.qh.Exec(ctx, "UPDATE puppet SET first_activity_ts=$1 WHERE username=$2 AND first_activity_ts is NULL", puppet.FirstActivityTs, puppet.JID.User)
 		if err != nil {
-			puppet.log.Warnfln("Failed to update first_activity_ts %s: %v", puppet.JID, err)
+			log.Warn().Err(err).Msg("Failed to update first_activity_ts")
 		}
 	}
 }
