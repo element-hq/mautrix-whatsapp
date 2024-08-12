@@ -27,6 +27,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -447,7 +448,7 @@ func (user *User) GetSpaceRoom(ctx context.Context) id.RoomID {
 				Type: event.StateRoomAvatar,
 				Content: event.Content{
 					Parsed: &event.RoomAvatarEventContent{
-						URL: user.bridge.Config.AppService.Bot.ParsedAvatar,
+						URL: user.bridge.Config.AppService.Bot.ParsedAvatar.CUString(),
 					},
 				},
 			}},
@@ -557,6 +558,52 @@ func (user *User) createClient(sess *store.Device) {
 		user.bridge.Metrics.TrackRetryReceipt(retryCount, true)
 		return true
 	}
+	if !user.bridge.Config.WhatsApp.ProxyOnlyLogin || sess.ID == nil {
+		if proxy, err := user.getProxy("login"); err != nil {
+			user.zlog.Err(err).Msg("Failed to get proxy address")
+		} else if err = user.Client.SetProxyAddress(proxy, whatsmeow.SetProxyOptions{
+			NoMedia: user.bridge.Config.WhatsApp.ProxyOnlyLogin,
+		}); err != nil {
+			user.zlog.Err(err).Msg("Failed to set proxy address")
+		}
+	}
+	if user.bridge.Config.WhatsApp.ProxyOnlyLogin {
+		user.Client.ToggleProxyOnlyForLogin(true)
+	}
+}
+
+type respGetProxy struct {
+	ProxyURL string `json:"proxy_url"`
+}
+
+func (user *User) getProxy(reason string) (string, error) {
+	if user.bridge.Config.WhatsApp.GetProxyURL == "" {
+		return user.bridge.Config.WhatsApp.Proxy, nil
+	}
+	parsed, err := url.Parse(user.bridge.Config.WhatsApp.GetProxyURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse address: %w", err)
+	}
+	q := parsed.Query()
+	q.Set("reason", reason)
+	parsed.RawQuery = q.Encode()
+	req, err := http.NewRequest(http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to prepare request: %w", err)
+	}
+	req.Header.Set("User-Agent", mautrix.DefaultUserAgent)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	} else if resp.StatusCode >= 300 || resp.StatusCode < 200 {
+		return "", fmt.Errorf("unexpected status code %d", resp.StatusCode)
+	}
+	var respData respGetProxy
+	err = json.NewDecoder(resp.Body).Decode(&respData)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+	return respData.ProxyURL, nil
 }
 
 func (user *User) Login(ctx context.Context) (<-chan whatsmeow.QRChannelItem, error) {
@@ -719,7 +766,7 @@ func (user *User) sendHackyPhonePing(ctx context.Context) {
 	lastKeyID, err := user.GetLastAppStateKeyID(ctx)
 	if lastKeyID != nil {
 		keyIDs = append(keyIDs, &waProto.AppStateSyncKeyId{
-			KeyId: lastKeyID,
+			KeyID: lastKeyID,
 		})
 	} else {
 		user.zlog.Warn().Err(err).Msg("Failed to get last app state key ID to send hacky phone ping - sending empty request")
@@ -728,7 +775,7 @@ func (user *User) sendHackyPhonePing(ctx context.Context) {
 		ProtocolMessage: &waProto.ProtocolMessage{
 			Type: waProto.ProtocolMessage_APP_STATE_SYNC_KEY_REQUEST.Enum(),
 			AppStateSyncKeyRequest: &waProto.AppStateSyncKeyRequest{
-				KeyIds: keyIDs,
+				KeyIDs: keyIDs,
 			},
 		},
 	}, whatsmeow.SendRequestExtra{Peer: true, ID: msgID})
@@ -1083,10 +1130,10 @@ type CustomTagData struct {
 }
 
 type CustomTagEventContent struct {
-	Tags map[string]CustomTagData `json:"tags"`
+	Tags map[event.RoomTag]CustomTagData `json:"tags"`
 }
 
-func (user *User) updateChatTag(ctx context.Context, intent *appservice.IntentAPI, portal *Portal, tag string, active bool) {
+func (user *User) updateChatTag(ctx context.Context, intent *appservice.IntentAPI, portal *Portal, tag event.RoomTag, active bool) {
 	if len(portal.MXID) == 0 || len(tag) == 0 {
 		return
 	} else if intent == nil {
@@ -1103,17 +1150,17 @@ func (user *User) updateChatTag(ctx context.Context, intent *appservice.IntentAP
 	}
 	currentTag, ok := existingTags.Tags[tag]
 	if active && !ok {
-		user.zlog.Debug().Stringer("portal_mxid", portal.MXID).Str("tag", tag).Msg("Adding tag to portal")
+		user.zlog.Debug().Stringer("portal_mxid", portal.MXID).Str("tag", string(tag)).Msg("Adding tag to portal")
 		data := CustomTagData{Order: "0.5", DoublePuppet: user.bridge.Name}
 		err = intent.AddTagWithCustomData(ctx, portal.MXID, tag, &data)
 	} else if !active && ok && currentTag.DoublePuppet == user.bridge.Name {
-		user.zlog.Debug().Stringer("portal_mxid", portal.MXID).Str("tag", tag).Msg("Removing tag from portal")
+		user.zlog.Debug().Stringer("portal_mxid", portal.MXID).Str("tag", string(tag)).Msg("Removing tag from portal")
 		err = intent.RemoveTag(ctx, portal.MXID, tag)
 	} else {
 		err = nil
 	}
 	if err != nil {
-		user.zlog.Err(err).Stringer("portal_mxid", portal.MXID).Str("tag", tag).Msg("Failed to update tag through double puppet")
+		user.zlog.Err(err).Stringer("portal_mxid", portal.MXID).Str("tag", string(tag)).Msg("Failed to update tag through double puppet")
 	}
 }
 

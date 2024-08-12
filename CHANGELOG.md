@@ -1,3 +1,14 @@
+# v0.10.9 (2024-07-16)
+
+* Added support for receiving Meta AI messages.
+* Fixed `m.relates_to` handling bug in previous release.
+
+# v0.10.8 (2024-06-16)
+
+* Added proxying options to config.
+* Updated fallback message for live locations and polls to clarify the user
+  should open the native WhatsApp app.
+
 # v0.10.7 (2024-04-16)
 
 * Changed media download retries to be handled asynchronously instead of
