@@ -130,6 +130,12 @@ DELETE FROM message_old WHERE sender NOT LIKE '%@s.whatsapp.net' AND sender<>cha
 DELETE FROM reaction_old WHERE sender NOT LIKE '%@s.whatsapp.net';
 DELETE FROM reaction_old WHERE NOT EXISTS(SELECT 1 FROM puppet_old WHERE username=replace(sender, '@s.whatsapp.net', ''));
 
+-- TEMP: attempt to fix foreign key violation on "message"(bridge_id, sender_id) not present in "ghost"
+INSERT INTO ghost (bridge_id, id, name, avatar_id, avatar_hash, avatar_mxc, name_set, avatar_set, contact_info_set, is_bot, identifiers, metadata)
+SELECT bridge_id, split_part(split_part(replace(sender, '@s.whatsapp.net', ''), ':', 1), '.', 1), '', '', '', '', false, false, false, false, '[]', '{}' FROM message_old
+WHERE sender<>chat_jid OR SENDER LIKE '%@s.whatsapp.net'
+ON CONFLICT (bridge_id, id) DO NOTHING;
+
 INSERT INTO message (
     bridge_id, id, part_id, mxid, room_id, room_receiver, sender_id, sender_mxid, timestamp, edit_count, metadata
 )
