@@ -191,6 +191,9 @@ LEFT JOIN message_old
     AND reaction_old.chat_receiver = message_old.chat_receiver
     AND reaction_old.target_jid = message_old.jid;
 
+-- TEMP: attempt to fix foreign key violation on "disappearing_message"(bridge_id, mx_room) not present in "portal"
+DELETE FROM disappearing_message_old WHERE mx_room NOT IN (SELECT mxid FROM portal);
+
 INSERT INTO disappearing_message (bridge_id, mx_room, mxid, type, timer, disappear_at)
 SELECT
     '', -- bridge_id
