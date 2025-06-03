@@ -192,7 +192,7 @@ LEFT JOIN message_old
     AND reaction_old.target_jid = message_old.jid;
 
 -- TEMP: attempt to fix foreign key violation on "disappearing_message"(bridge_id, mx_room) not present in "portal"
-DELETE FROM disappearing_message_old WHERE room_id NOT IN (SELECT mxid FROM portal);
+DELETE FROM disappearing_message_old WHERE NOT EXISTS (SELECT FROM portal WHERE bridge_id='' AND room_id=mxid);
 
 INSERT INTO disappearing_message (bridge_id, mx_room, mxid, type, timer, disappear_at)
 SELECT
